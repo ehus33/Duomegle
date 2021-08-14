@@ -1,0 +1,212 @@
+<html>
+  <head>
+    <title>In meeting: <%= roomId %></title>
+    <link rel="stylesheet" href="/w3.css" />
+    <style>
+      .chat * {
+        margin-bottom: 0.5rem;
+      }
+      .chat .cwa {
+        color: gray;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="start" class="w3-margin w3-padding w3-border w3-border-gray" style="display: flex; justify-content: center; align-items: center">
+      <button class="w3-button w3-blue w3-hover-blue" onclick="start()">Click to join meeting</button>
+    </div>
+    <div class="w3-hide" id="main">
+      <h1 class="w3-center w3-xxlarge">In meeting: <%= roomId %></h1>
+      <p id="owner-p" class="w3-center w3-margin w3-hide">You are the owner</p>
+      <div class="w3-hide" id="main-div">
+        <main style="display: grid; gap: 1rem; grid-template-columns: 70% 30%" class="w3-margin">
+          <section id="videos">
+            <div style="display: flex; justify-content: center; align-items: center; gap: 2rem;">
+              <button id="cam-btn" class="w3-button w3-blue w3-hover-blue">Toggle camera</button>
+              <button id="mic-btn" class="w3-button w3-blue w3-hover-blue">Toggle mic</button>
+            </div>
+            <div style="display: flex; gap: 2rem; flex-direction: column; justify-content: center; align-items: center;" class="w3-margin">
+              <video id="self-video" autoplay muted></video>
+              <video id="remote-video" autoplay muted /></video>
+              <audio id="remote-audio" autoplay /></audio>
+            </div>
+          </section>
+          <section id="chat">
+            <div class="w3-border w3-border-gray w3-white w3-padding">
+              <h2 class="w3-center w3-xlarge">Chat</h2>
+              <ul id="chat-ul" style="list-style-type: none; margin: 0; padding: 0" class="chat">
+                <li class="w3-center cwa">Chat with Anon</li>
+              </ul>
+            </div>
+            <input class="w3-input w3-border w3-border-gray" id="chat-input" placeholder="Enter message and press enter">
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.min.js"></script>
+    <script src="https://unpkg.com/simple-peer@9.11.0/simplepeer.min.js"></script>
+    <script>
+    const socket = io();
+    const roomId = "<%= roomId %>";
+    const mainDiv = document.getElementById("main-div");
+    let isOwner;
+    let peer;
+    let selfVideo;
+    let remoteVideo;
+    let selfAudio;
+    let remoteAudio;
+
+    function send(data) {
+      if (!peer) return;
+      peer.send(btoa(JSON.stringify(data)));
+    }
+
+    document.getElementById("chat-input").addEventListener("keydown", e => {
+      if (e.key.toLowerCase() !== "enter") return;
+      const msg = document.getElementById("chat-input").value;
+      if (!msg.trim()) return;
+      addChatMsg({sender: "You", message: msg});
+      send({sender: "Anon", message: msg, type: "chat"});
+      document.getElementById("chat-input").value = "";
+    });
+
+    document.getElementById("cam-btn").addEventListener("click", e => {
+      if (!peer) return;
+      if (!selfVideo) {
+        navigator.mediaDevices.getUserMedia({video: true}).then(st => {
+          peer.addStream(st);
+          selfVideo = st;
+          document.getElementById("self-video").srcObject = selfVideo;
+        }).catch(console.error);
+      } else {
+        document.getElementById("self-video").srcObject = null;
+        peer.removeStream(selfVideo);
+        selfVideo.getTracks().forEach(t => t.stop());
+        selfVideo = null;
+        send({type: "video:off"})
+      }
+    });
+
+    document.getElementById("mic-btn").addEventListener("click", e => {
+      if (!peer) return;
+      if (!selfAudio) {
+        navigator.mediaDevices.getUserMedia({audio: true}).then(st => {
+          peer.addStream(st);
+          selfAudio = st;
+        }).catch(console.error);
+      } else {
+        peer.removeStream(selfAudio);
+        selfAudio.getTracks().forEach(t => t.stop());
+        selfAudio = null;
+        send({type: "audio:off"})
+      }
+    });
+
+    function addChatMsg(data) {
+      const chatUl = document.getElementById("chat-ul");
+      const li = document.createElement("li");
+      const str = document.createElement("strong");
+      const span = document.createElement("span");
+      str.innerText = data.sender + ": ";
+      span.innerText = data.message;
+      li.appendChild(str);
+      li.appendChild(span);
+      chatUl.appendChild(li);
+    }
+
+    socket.on("ping", () => {
+      console.log("was pinged");
+      socket.emit("pong");
+    });
+
+    function start() {
+      document.getElementById("start").classList.add("w3-hide");
+      document.getElementById("main").classList.remove("w3-hide");
+      socket.emit("join-room", roomId);
+    }
+
+    socket.on("err", err => {
+      console.error(err);
+      alert(err.message);
+      if (err.redir) window.location.href = "/";
+    });
+    socket.on("cb:join-room", ({isOwner: owner}) => {
+      isOwner = owner;
+      if (isOwner) document.getElementById("owner-p").classList.remove("w3-hide");
+      console.log("Joined room" + (owner ? ". Is owner" : ""));
+    });
+    socket.on("new-member", ({sid}) => {
+      console.log(`${sid} joined the room`);
+      createPeer();
+    });
+    socket.on("member-left", ({sid}) => {
+      console.log(`${sid} left the room`);
+      peer.destroy();
+      delete peer;
+      isOwner = true;
+      if (isOwner) document.getElementById("owner-p").classList.remove("w3-hide");
+      mainDiv.classList.add("w3-hide");
+    });
+    socket.on("signal", ({data}) => {
+      console.log("Recv signal", data);
+      if (!peer) return;
+      peer.signal(data);
+    });
+
+    function createPeer() {
+      console.log("Creating peer");
+      if (isOwner === undefined || peer !== undefined) return;
+      peer = new SimplePeer({
+        initiator: isOwner,
+        trickle: false
+      });
+
+      peer.on("error", console.error);
+
+      peer.on("signal", (data) => {
+        console.log("SIGNAL", data);
+        socket.emit("signal", JSON.stringify(data));
+      });
+
+      peer.on("connect", () => {
+        peer.send("Test!");
+      });
+
+      peer.on("stream", (st) => {
+        console.log("Recv stream", st);
+        if (st.getVideoTracks().length) {
+          remoteVideo = st;
+          document.getElementById("remote-video").srcObject = st;
+        }
+        if (st.getAudioTracks().length) {
+          remoteAudio = st;
+          document.getElementById("remote-audio").srcObject = st;
+        }
+      });
+
+      peer.on("data", msg => {
+        console.log("Recv: " + msg);
+        try {
+          const data = JSON.parse(atob(msg));
+          if (data.type === "chat") addChatMsg(data);
+          else if (data.type === "video:off") {
+            if (!remoteVideo) return;
+            document.getElementById("remote-video").srcObject = null;
+            remoteVideo.getTracks().forEach(t => t.stop());
+            remoteVideo = null
+          }
+          else if (data.type === "audio:off") {
+            if (!remoteAudio) return;
+            document.getElementById("remote-audio").srcObject = null;
+            remoteAudio.getTracks().forEach(t => t.stop());
+            remoteAudio = null
+          }
+        } catch {}
+      });
+
+      mainDiv.classList.remove("w3-hide");
+    }
+    </script>
+  </body>
+</html>
